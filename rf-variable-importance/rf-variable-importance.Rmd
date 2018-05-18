@@ -26,39 +26,33 @@ library(ranger)
 library(knitr)
 library(caret)
 library(party)
+library(skimr)
 ```
 
 ---
 
 ## Random Forest Variable Importance
 
-- Random forests are typically used as "black box" models for prediction, but they do return relative importance metrics associated with each feature in the model.  These metrics can be used to offer some sort of interpretation as to which features are powering the predictions, and also potentially assist in feature selection in "small n, large p" (high dimensional) situations.
+- Random forests are typically used as "black box" models for prediction
+    - but they do return relative importance metrics associated with each feature in the model
+        - these can be used to help interpretability
+            - which features are powering the predictions
+            - assist in feature selection in "small n, large p" (high dimensional) data
 
+<br>
 
 - Careful attention should be paid to the data you are working with and when it is appropriate to use and interpret the different variable importance metrics from random forests.
 
 ---
 
-## Outline
-
-- Words of caution
-- Quick review of popular metrics
-    - mean decrease in impurity (what is "gini"?)
-    - permutation
-- Bias in certain scenarios
-    - mix of variable types
-    - collinear variables
-- Classification example
-    - compare to regression
-- Other possible importance metrics to use
-
----
-
 ## Words of caution
 
-- A recent blog post (http://parrt.cs.usfca.edu/doc/rf-importance/index.html) shows that default importance strategies in both R (randomForest) and Python (scikit) do not give reliable feature importances when potential predictor variables vary in their scale of measurement or their number of categories.  
+- A recent [blog post](http://parrt.cs.usfca.edu/doc/rf-importance/index.html) from a team at USF shows that default importance strategies in both R (randomForest) and Python (scikit) are unreliable in many data scenarios
+    - importance metrics are biased when potential predictor variables vary in their scale of measurement or their number of categories
 
-- It is also known that variable importance metrics are biased when predictor variables are highly correlated.
+<br>
+    
+- It is also known that importance metrics are biased when predictor variables are highly correlated.
     - Suboptimal predictor variables may be artificially preferred
 
 ---
@@ -67,7 +61,7 @@ library(party)
 
 - This has actually been known for over ten years (Strobl et al, 2007 and Strobl et al, 2008), but it can be easy to assume the default importances of popular packages will fit your unique datasets.  
 
-- Demonstrate how continuous and high cardinality variables (categorical variables with more categories) are preferred, even if they are equally uninformative compared to variables with less categories, and therefore rankings of variable importance are biased. 
+- The papers and blog post demonstrate how continuous and high cardinality variables (categorical variables with more categories) are preferred, even if they are equally uninformative compared to variables with less categories
 
 - The authors suggest using _permutation importance_ instead of the default in these cases.
 
@@ -92,6 +86,8 @@ library(party)
         $$\sum_{i=1}^{n_c} p_i(1 - p_i)$$
 
         where $n_c$ is the number of classes in the target variable and $p_i$ is the ratio of this class
+
+Note: For regression, the analagous metric to the Gini index would be the RSS (residual sum of squares)
         
 ---
 
@@ -108,184 +104,226 @@ averaged over all splits in the forest involving the variable in question result
 
 ---
 
+## Why is impurity importance biased?
+
+- Each time a break point is selected in a variable, every level of the variable is tested to find the best break point
+    - Continuous or high cardinality variables will have _many_ more split points
+        - "multiple testing" problem
+        - higher probability that by chance, that variable happens to predict the outcome well
+        - variables where more splits are tried, will appear more often in the tree
+
+---
+
+## Rent data
+
+```{r, echo = FALSE}
+
+# RF Classification - feature importances
+
+library(tidyverse)
+library(randomForest)
+library(cowplot)
+library(gridExtra)
+
+rent <- read.csv('../rent.csv')
+
+rent <- rent %>% 
+  mutate(bathrooms = as.factor(bathrooms),
+         bedrooms  = as.factor(bedrooms),
+         interest_level = as.factor(interest_level))
+```
+
+```{r}
+
+rent %>% 
+  glimpse()
+```
+
+There are 15 unique categories for bathrooms, and 9 unique categories for bedrooms.
+
+Outcome is `interest_level`, with three categories: low (1), medium (2), high (3)
+
+---
+
+```{r, echo = FALSE}
+## plotting functions ##
+
+create_rfplot <- function(rf, type){
+  imp <- importance(rf, type=type, scale = F)
+  featureImportance <- data.frame(Feature=row.names(imp), Importance=imp[,1])
+  
+  p <- ggplot(featureImportance, aes(x=reorder(Feature, Importance), y=Importance)) +
+       geom_bar(stat="identity", fill="#53cfff", width = 0.65) +
+       coord_flip() + 
+       theme_light(base_size=20) +
+       theme(axis.title.x=element_blank(),
+             axis.title.y=element_blank(),
+             axis.text.x = element_text(size = 15, color = "black"),
+             axis.text.y = element_text(size = 15, color = "black")) 
+  return(p)
+}
+
+create_ggplot <- function(featureImportance){
+  p <- ggplot(featureImportance, aes(x=reorder(Feature, Importance), y=Importance)) +
+       geom_bar(stat="identity", fill="#53cfff", width = 0.65) +
+       coord_flip() + 
+       theme_light(base_size=20) +
+       theme(axis.title.x=element_blank(),
+             axis.title.y=element_blank(),
+             axis.text.x = element_text(size = 15, color = "black"),
+             axis.text.y = element_text(size = 15, color = "black")) 
+  return(p)
+}
+```
+
+What are the mean decrease in gini importance rankings of these features?
+
+In `randomForest` with `type = 2`:
+
+```{r}
+
+set.seed(1)
+
+rf1 <- randomForest(
+  interest_level ~ .,  
+  ntree = 40,
+  data = rent[, 1:6],
+  nodesize = 1, 
+  replace = FALSE,
+  importance = TRUE
+)
+```
+
+Note: In `ranger` would use `type = "impurity"`.
+
+---
+
+```{r}
+create_rfplot(rf1, type = 2)
+```
+
+---
+
+Create a continuous "random" column, which _should_ be last in importance.  
+
+```{r}
+
+rent <- rent %>% 
+  mutate(random = sample(100, size = nrow(rent), replace = TRUE))
+
+rf2 = randomForest(
+  interest_level ~ .,  
+  ntree = 40,
+  data = rent, # with random column
+  nodesize = 1, 
+  replace = FALSE,
+  importance = TRUE
+)
+
+```
+
+How does mean decrease in Gini rank this variable?
+
+---
+
+```{r}
+
+create_rfplot(rf2, type = 2)
+```
+
+---
+
 ## Permutation importance
 
-- Basic idea: Consider a variable important if it has a positive effect on the prediction accuracy.
+- Basic idea: Consider a variable important if it has a positive effect on the:
+    - prediction accuracy (classification)
+    - MSE (regression)
 
 - Steps:
     1. Grow a first tree, and calculate the prediction accuracy in the OOB observations
     2. Any association between the variable of interest, $X_i$, and the outcome is broken by permuting the values of all individuals for $X_i$, and the prediction accuracy is computed again.
     3. The difference between the two accuracy values is the permutation importance for $X_i$ from a single tree.
-    4. The average of all tree importance values in a random forest then gives the random forest permutation importance of this variable.
-    5. Repeat the procedure for all variables of interest.
+    4. The average of all tree importance values in a random forest then gives the permutation importance of this variable.
+    5. Repeat for all variables of interest.
 
 ---
 
 ## Permutation importance
 
-- More computationally expensive than impurity, but more reliable.
+- More computationally expensive, but more reliable.
     - Does not require retraining the model after permuting each column, just re-run the permuted sample through the already-trained model
-    - Note that this method is applicable to any model!
- 
-- Not scaling the importance has better statistical properties (Strobl 2008)
+    
+- Applicable to any model, not just RFs
+    
+- Risk is a potential bias towards collinear predictive variables (more later)
+
+- `type = 1` in `randomForest`, or `type = "permutation"` in `ranger`
+
+---
+
+How does permutation importance rank the original `rent` variables?
+
+```{r}
+create_rfplot(rf1, type = 1) # no random column
+```
+
+---
+
+How do these rankings change after adding a continuous random column?
+
+```{r}
+create_rfplot(rf2, type = 1) # with random column
+```
+
+---
+    
+## To scale or not to scale?
+
+- Does scaling (dividing by SD) help in certain scenarios?
+
+- Raw, unscaled importance has better statistical properties (Strobl et al, 2008)
     - We don't care what the values are _per se_, we only care about the relative strengths
-    
-- Risk of permutation importance is a potential bias towards correlated predictive variables
+        - scales the values, but does not alter ranks
 
----
+- `scale.permutation.importance` argument in `ranger`, default is `FALSE`
+- `scale` argument in `randomForest::importance()`, default is `TRUE`
+    - in plots shown here, `scale = F`
 
-## Create fake data (binary outcome)
-
-```{r}
-
-data <- tibble(
-  y  = sample(c(0:1),  1000, replace = TRUE),
-  x1 = rnorm(1000,0, 1),
-  x2 = sample(c(0:1),  1000, replace = TRUE),
-  x3 = sample(c(0:3),  1000, replace = TRUE),
-  x4 = sample(c(0:9),  1000, replace = TRUE),
-  x5 = sample(c(0:19), 1000, replace = TRUE)
-) %>% 
-  mutate_if(is.integer, as.factor)
-
-```
-
-Extract the features and specify the model formula.
-
-```{r}
-
-features <- train %>% 
-  select(-y) %>% 
-  colnames()
-
-formula <- as.formula(paste0("y ~ ", paste(features, collapse = " + ")))
-```
-
----
-
-Now fit a default random forest using `ranger`, with `importance = "impurity"`.
-
-```{r}
-
-set.seed(99)
-
-impurity <- ranger(
-  formula,
-  data = train,
-  num.trees = 500,
-  importance = "impurity"
-)
-
-impurity %>% 
-  importance() %>% 
-  as_tibble() %>% 
-  rownames_to_column("Variable") %>% 
-  arrange(desc(value))
-```
-
----
-
-Using permutation importance (`importance = "permutation"`):
-
-```{r}
-
-permutation <- ranger(
-  formula,
-  data = train,
-  num.trees = 500,
-  importance = "permutation"
-)
-
-permutation %>% 
-  importance() %>% 
-  as_tibble() %>% 
-  rownames_to_column("Variable") %>% 
-  arrange(desc(value))
-```
-
----
-    
-## To scale or not to scale?
-
-- Does scaling (dividing by SD) help in certain scenarios more than others?
-    
-- `scale.permutation.importance` argument, default is `FALSE`.   
-
-```{r}
-
-permutation_scaled <- ranger(
-  formula,
-  data = train,
-  num.trees  = 500,
-  importance = "permutation",
-  scale.permutation.importance = TRUE
-)
-```
-
----
-
-## To scale or not to scale?
-
-```{r}
-
-permutation_scaled %>% 
-  importance() %>% 
-  as_tibble() %>% 
-  rownames_to_column("Variable") %>% 
-  arrange(desc(value))
-```
-
-No different conclusions in this data.  The bias towards continuous and high categorical variables is weakened but not substantially altered by scaling.  For other reasons (insert reasons + citations) the raw unscaled metrics are preferred.
- 
 ---
 
 ## Collinear features
 
-- The blog post mentioned earlier demonstrates that mean decrease in impurity and permutation importance computed from RF models spread importance across collinear variables.
+- Mean decrease in impurity and permutation importance computed from RF models _spread_ importance across collinear variables.
+    - i.e. if you duplicate a feature and re-evaluate importance, the duplicated feature pulls down the importance of the original, and they are close to equal in importance
 
-- Could possibly group highly correlated features into "meta-features" for use in importance rankings.
+- One possible way to deal with this is to  group highly correlated features into "meta-features" for use in importance rankings.
+    - Check Spearman's correlation (non-parametric) and group those highly correlated together
 
-- Another method introduced by Strobl et al (2008) is conditional permutation importance, which helps control for collinear features in computing importance
+- Another method introduced by Strobl et al (2008) is _conditional_ permutation importance
 
 
 ---
 
 ## Conditional permutation importance
-
-- Reduces bias when your features have collinearity issues
 
 - Steps to compute:
 
 1. In each tree, compute the OOB-prediction accuracy before the permutation
-2. For all variables Z to be conditioned on: Extract the cutpoints that split this variable in the current tree and create a grid by means of bisecting the sample space in each cutpoint
-3. Within this grid permute the values of $X_j$ and compute the OOB-prediction accuracy after permutation
+2. For all variables Z to be conditioned on: Extract the cutpoints that split this variable in the current tree and create a grid by bisecting the sample space in each cutpoint
+    - to determine Z, suggested to include only variables whose empirical correlation with the variable of interest $X_j$ exceeds a threshold (i.e. 0.2).  
+3. _Within_ this grid permute the values of $X_j$ and compute the OOB-prediction accuracy after permutation
 4. The difference between the prediction accuracy before and after the permutation accuracy again gives the importance of $X_j$ for one tree.  The importance of $X_j$ for the forest is again computed as an average over all trees.
+
+- Note: much more computationally expensive
 
 ---
 
 ## Conditional permutation importance
 
-- To determine the variables Z to be conditioned on, include only those variables whose empirical correlation with the variable of interest $X_j$ exceeds a certain moderate threshold.  
+- `party::cforest()` to fit the model and `party::varimp()` to compute importance metrics
     - default `threshold` in `party::varimp()` is 0.2.
 
-```{r, eval = FALSE}
-
-conditional <- party::cforest(formula, data = train)
-
-cond_imp <- conditional %>% 
-  party::varimp(conditional = TRUE, threshold = 0.2) %>% # very slow
-  as_tibble() %>% 
-  rownames_to_column("Variable") %>% 
-  arrange(desc(value))
-
-```
-
-```{r, echo = FALSE}
-
-cond_imp <- read_rds("../cond_imp.rds")
-
-cond_imp
-```
+- More details in the original paper (Strobl et al, 2008) [here, page 7](https://bmcbioinformatics.biomedcentral.com/track/pdf/10.1186/1471-2105-9-307)
 
 ---
 
@@ -297,10 +335,18 @@ cond_imp
     
 - Avoids the bias towards continuous/categorical variables with a high number of categories.
     - When used with subsampling without replacement
+
+- Default in `randomForest` and `cforest` is `replace = TRUE`
+    - Examples here leave the default setting
+    - Strobl et al (2007) demonstrates how subsampling _without_ replacement affects importance rankings 
+        - [Here](https://link.springer.com/content/pdf/10.1186%2F1471-2105-8-25.pdf)
+            - Figure 1 (page 6) on figure 5 (page 10), equally uninformative predictors are the same in bottom right
     
 ---
 
 ## Drop-column importance
+
+- Another potential way to decrease bias in importance with collinear features
 
 - Basic idea: Get a baseline performance score as with permutation importance, but then drop a column entirely, retrain the model, and recompute the performance score
     - importance value of a feature is the difference between the baseline and the score from the model missing that feature
@@ -309,11 +355,25 @@ cond_imp
 
 ---
 
+## Time-dependent data
+
+- What if your data is time dependent?
+    - by default OOB performance is used to calculate permutation importance
+    - would have to find a specific package or write code to perform the calculations ourselves
+        - use time-dependent validation sets and variable shuffling
+            - to avoid the time-unaware OOB
+
+---
+
 ## Conclusions
 
-- In order to be able to reliably interpret the variable importance measures of a random forest, the forest must be built from unbiased classification trees, and sampling must be conducted _without_ replacement.
+- In order to be able to reliably interpret the variable importance measures of a random forest, the forest must be built from unbiased classification trees, and sampling should be conducted _without_ replacement.
 
 - What types of features are you using in your model?
-    - If all continuous or all categorical with the same number of categories, and collinearity between predictors is not a problem, then impurity importance will not be biased.
-    - If mix of categorical and continuous with no collinearity issues, permutation importance should not be biased and can be used with the least computational expense
-    - If mix of variable types and collinearity issues, consider conditional permutation importance or drop column importance if computational complexity is not a problem.
+    - all continuous or all categorical with the same number of categories, no collinearity
+        - then impurity importance should not be biased
+    - mix of categorical and continuous with no collinearity
+        - permutation importance should not be biased and can be used with the least computational expense
+    - mix of variable types and collinearity
+        - conditional permutation importance or drop column importance if computational complexity is not a problem
+
