@@ -143,6 +143,8 @@ There are 15 unique categories for bathrooms, and 9 unique categories for bedroo
 
 Outcome is `interest_level`, with three categories: low (1), medium (2), high (3)
 
+Note: [Data](https://raw.githubusercontent.com/parrt/random-forest-importances/master/notebooks/data/rent.csv) and [code](https://github.com/parrt/random-forest-importances/blob/master/notebooks/permutation-importances-classifier.Rmd) used here is from the authors of the blog post at USF.
+
 ---
 
 ```{r, echo = FALSE}
