@@ -1,0 +1,388 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>RF Variable Importance Metrics</title>
+    <meta charset="utf-8">
+    <meta name="author" content="Caleb Scheidel" />
+    <link rel="stylesheet" href="mc-xaringan.css" type="text/css" />
+    <link rel="stylesheet" href="mc-xaringan-fonts.css" type="text/css" />
+  </head>
+  <body>
+    <textarea id="source">
+class: center, middle, inverse, title-slide
+
+# RF Variable Importance Metrics
+### Caleb Scheidel
+### 2018/05/18
+
+---
+
+
+layout: true
+background-color: #fafaef
+&lt;div class="my-footer"&gt;&lt;img src="mc_logo_rectangle.png" style="height: 30px;"/&gt;&lt;/div&gt;
+
+
+
+---
+
+## Random Forest Variable Importance
+
+- Random forests are typically used as "black box" models for prediction, but they do return relative importance metrics associated with each feature in the model.  These metrics can be used to offer some sort of interpretation as to which features are powering the predictions, and also potentially assist in feature selection in "small n, large p" (high dimensional) situations.
+
+
+- Careful attention should be paid to the data you are working with and when it is appropriate to use and interpret the different variable importance metrics from random forests.
+
+---
+
+## Outline
+
+- Words of caution
+- Quick review of popular metrics
+    - mean decrease in impurity (what is "gini"?)
+    - permutation
+- Bias in certain scenarios
+    - mix of variable types
+    - collinear variables
+- Classification example
+    - compare to regression
+- Other possible importance metrics to use
+
+---
+
+## Words of caution
+
+- A recent blog post (http://parrt.cs.usfca.edu/doc/rf-importance/index.html) shows that default importance strategies in both R (randomForest) and Python (scikit) do not give reliable feature importances when potential predictor variables vary in their scale of measurement or their number of categories.  
+
+- It is also known that variable importance metrics are biased when predictor variables are highly correlated.
+    - Suboptimal predictor variables may be artificially preferred
+
+---
+
+## Words of caution
+
+- This has actually been known for over ten years (Strobl et al, 2007 and Strobl et al, 2008), but it can be easy to assume the default importances of popular packages will fit your unique datasets.  
+
+- Demonstrate how continuous and high cardinality variables (categorical variables with more categories) are preferred, even if they are equally uninformative compared to variables with less categories, and therefore rankings of variable importance are biased. 
+
+- The authors suggest using _permutation importance_ instead of the default in these cases.
+
+---
+
+## Variable Importance Measures
+
+- Mean decrease in impurity (Gini) (default in randomForest and scikit)
+- Permutation importance
+- Drop-column importance
+- Conditional importance
+
+---
+
+## Mean decrease in impurity (Gini) importance
+
+- Describes the improvement in the "Gini gain" splitting criterion (for classification only)
+    - incorporates a "weighted" mean of the individual trees' improvement in the splitting criterion produced by each variable
+    - What is "Gini impurity index"?
+        - Defined as 
+        
+        `$$\sum_{i=1}^{n_c} p_i(1 - p_i)$$`
+
+        where `\(n_c\)` is the number of classes in the target variable and `\(p_i\)` is the ratio of this class
+        
+---
+
+## Mean decrease in impurity (Gini) importance
+
+- Decrease in impurity importance, `\(I\)`, is defined as:
+
+`$$I = G_{parent} - G_{split1} - G_{split2}$$`
+
+averaged over all splits in the forest involving the variable in question results in the mean decrease in impurity importance.
+
+- Pro: Not very computationally expensive
+- Con: Biased in favor of continuous and high cardinality variables
+
+---
+
+## Permutation importance
+
+- Basic idea: Consider a variable important if it has a positive effect on the prediction accuracy.
+
+- Steps:
+    1. Grow a first tree, and calculate the prediction accuracy in the OOB observations
+    2. Any association between the variable of interest, `\(X_i\)`, and the outcome is broken by permuting the values of all individuals for `\(X_i\)`, and the prediction accuracy is computed again.
+    3. The difference between the two accuracy values is the permutation importance for `\(X_i\)` from a single tree.
+    4. The average of all tree importance values in a random forest then gives the random forest permutation importance of this variable.
+    5. Repeat the procedure for all variables of interest.
+
+---
+
+## Permutation importance
+
+- More computationally expensive than impurity, but more reliable.
+    - Does not require retraining the model after permuting each column, just re-run the permuted sample through the already-trained model
+    - Note that this method is applicable to any model!
+ 
+- Not scaling the importance has better statistical properties (Strobl 2008)
+    - We don't care what the values are _per se_, we only care about the relative strengths
+    
+- Risk of permutation importance is a potential bias towards correlated predictive variables
+
+---
+
+## Create fake data (binary outcome)
+
+
+```r
+data &lt;- tibble(
+  y  = sample(c(0:1),  1000, replace = TRUE),
+  x1 = rnorm(1000,0, 1),
+  x2 = sample(c(0:1),  1000, replace = TRUE),
+  x3 = sample(c(0:3),  1000, replace = TRUE),
+  x4 = sample(c(0:9),  1000, replace = TRUE),
+  x5 = sample(c(0:19), 1000, replace = TRUE)
+) %&gt;% 
+  mutate_if(is.integer, as.factor)
+```
+
+Extract the features and specify the model formula.
+
+
+```r
+features &lt;- train %&gt;% 
+  select(-y) %&gt;% 
+  colnames()
+
+formula &lt;- as.formula(paste0("y ~ ", paste(features, collapse = " + ")))
+```
+
+---
+
+Now fit a default random forest using `ranger`, with `importance = "impurity"`.
+
+
+```r
+set.seed(99)
+
+impurity &lt;- ranger(
+  formula,
+  data = train,
+  num.trees = 500,
+  importance = "impurity"
+)
+
+impurity %&gt;% 
+  importance() %&gt;% 
+  as_tibble() %&gt;% 
+  rownames_to_column("Variable") %&gt;% 
+  arrange(desc(value))
+```
+
+```
+## # A tibble: 5 x 2
+##   Variable value
+##   &lt;chr&gt;    &lt;dbl&gt;
+## 1 x1       153. 
+## 2 x5        84.2
+## 3 x4        67.1
+## 4 x3        34.0
+## 5 x2        18.1
+```
+
+---
+
+Using permutation importance (`importance = "permutation"`):
+
+
+```r
+permutation &lt;- ranger(
+  formula,
+  data = train,
+  num.trees = 500,
+  importance = "permutation"
+)
+
+permutation %&gt;% 
+  importance() %&gt;% 
+  as_tibble() %&gt;% 
+  rownames_to_column("Variable") %&gt;% 
+  arrange(desc(value))
+```
+
+```
+## # A tibble: 5 x 2
+##   Variable    value
+##   &lt;chr&gt;       &lt;dbl&gt;
+## 1 x3        0.0108 
+## 2 x4        0.00959
+## 3 x1        0.00557
+## 4 x2        0.00479
+## 5 x5       -0.00316
+```
+
+---
+    
+## To scale or not to scale?
+
+- Does scaling (dividing by SD) help in certain scenarios more than others?
+    
+- `scale.permutation.importance` argument, default is `FALSE`.   
+
+
+```r
+permutation_scaled &lt;- ranger(
+  formula,
+  data = train,
+  num.trees  = 500,
+  importance = "permutation",
+  scale.permutation.importance = TRUE
+)
+```
+
+---
+
+## To scale or not to scale?
+
+
+```r
+permutation_scaled %&gt;% 
+  importance() %&gt;% 
+  as_tibble() %&gt;% 
+  rownames_to_column("Variable") %&gt;% 
+  arrange(desc(value))
+```
+
+```
+## # A tibble: 5 x 2
+##   Variable value
+##   &lt;chr&gt;    &lt;dbl&gt;
+## 1 x3        8.65
+## 2 x4        2.92
+## 3 x1        2.46
+## 4 x2        2.23
+## 5 x5       -3.83
+```
+
+No different conclusions in this data.  The bias towards continuous and high categorical variables is weakened but not substantially altered by scaling.  For other reasons (insert reasons + citations) the raw unscaled metrics are preferred.
+ 
+---
+
+## Collinear features
+
+- The blog post mentioned earlier demonstrates that mean decrease in impurity and permutation importance computed from RF models spread importance across collinear variables.
+
+- Could possibly group highly correlated features into "meta-features" for use in importance rankings.
+
+- Another method introduced by Strobl et al (2008) is conditional permutation importance, which helps control for collinear features in computing importance
+
+
+---
+
+## Conditional permutation importance
+
+- Reduces bias when your features have collinearity issues
+
+- Steps to compute:
+
+1. In each tree, compute the OOB-prediction accuracy before the permutation
+2. For all variables Z to be conditioned on: Extract the cutpoints that split this variable in the current tree and create a grid by means of bisecting the sample space in each cutpoint
+3. Within this grid permute the values of `\(X_j\)` and compute the OOB-prediction accuracy after permutation
+4. The difference between the prediction accuracy before and after the permutation accuracy again gives the importance of `\(X_j\)` for one tree.  The importance of `\(X_j\)` for the forest is again computed as an average over all trees.
+
+---
+
+## Conditional permutation importance
+
+- To determine the variables Z to be conditioned on, include only those variables whose empirical correlation with the variable of interest `\(X_j\)` exceeds a certain moderate threshold.  
+    - default `threshold` in `party::varimp()` is 0.2.
+
+
+```r
+conditional &lt;- party::cforest(formula, data = train)
+
+cond_imp &lt;- conditional %&gt;% 
+  party::varimp(conditional = TRUE, threshold = 0.2) %&gt;% # very slow
+  as_tibble() %&gt;% 
+  rownames_to_column("Variable") %&gt;% 
+  arrange(desc(value))
+```
+
+
+```
+## # A tibble: 5 x 2
+##   Variable      value
+##   &lt;chr&gt;         &lt;dbl&gt;
+## 1 x3        0.000667 
+## 2 x2        0.0000544
+## 3 x4       -0.00142  
+## 4 x1       -0.00247  
+## 5 x5       -0.00322
+```
+
+---
+
+## Bootstrapping
+
+- Bootstrap sampling _with_ replacement is traditionally employed in random forests
+    - Affects variable selection frequencies
+    - artifically induces an association between variables
+    
+- Avoids the bias towards continuous/categorical variables with a high number of categories.
+    - When used with subsampling without replacement
+    
+---
+
+## Drop-column importance
+
+- Basic idea: Get a baseline performance score as with permutation importance, but then drop a column entirely, retrain the model, and recompute the performance score
+    - importance value of a feature is the difference between the baseline and the score from the model missing that feature
+    
+- Downside: quite computationally expensive, requires repeatedly retraining the model
+
+---
+
+## Conclusions
+
+- In order to be able to reliably interpret the variable importance measures of a random forest, the forest must be built from unbiased classification trees, and sampling must be conducted _without_ replacement.
+
+- What types of features are you using in your model?
+    - If all continuous or all categorical with the same number of categories, and collinearity between predictors is not a problem, then impurity importance will not be biased.
+    - If mix of categorical and continuous with no collinearity issues, permutation importance should not be biased and can be used with the least computational expense
+    - If mix of variable types and collinearity issues, consider conditional permutation importance or drop column importance if computational complexity is not a problem.
+    </textarea>
+<script src="https://remarkjs.com/downloads/remark-latest.min.js"></script>
+<script>var slideshow = remark.create({
+"highlightStyle": "github",
+"highlightLines": true,
+"countIncrementalSlides": false
+});
+if (window.HTMLWidgets) slideshow.on('afterShowSlide', function (slide) {
+  window.dispatchEvent(new Event('resize'));
+});
+(function() {
+  var d = document, s = d.createElement("style"), r = d.querySelector(".remark-slide-scaler");
+  if (!r) return;
+  s.type = "text/css"; s.innerHTML = "@page {size: " + r.style.width + " " + r.style.height +"; }";
+  d.head.appendChild(s);
+})();</script>
+
+<script type="text/x-mathjax-config">
+MathJax.Hub.Config({
+  tex2jax: {
+    skipTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+  }
+});
+</script>
+<!-- dynamically load mathjax for compatibility with self-contained -->
+<script>
+(function () {
+  var script = document.createElement('script');
+  script.type = 'text/javascript';
+  script.src  = 'https://cdn.bootcss.com/mathjax/2.7.1/MathJax.js?config=TeX-MML-AM_CHTML';
+  if (location.protocol !== 'file:' && /^https?:/.test(script.src))
+    script.src  = script.src.replace(/^https?:/, '');
+  document.getElementsByTagName('head')[0].appendChild(script);
+})();
+</script>
+  </body>
+</html>
